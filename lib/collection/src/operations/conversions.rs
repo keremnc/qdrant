@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::num::{NonZeroU32, NonZeroU64};
 
-use api::grpc::conversions::{from_grpc_dist, payload_to_proto, proto_to_payloads};
+use api::grpc::conversions::{
+    convert_shard_key_from_grpc_opt, convert_shard_key_to_grpc, from_grpc_dist, payload_to_proto,
+    proto_to_payloads,
+};
 use api::grpc::qdrant::quantization_config_diff::Quantization;
 use api::grpc::qdrant::update_collection_cluster_setup_request::Operation as ClusterOperationsPb;
 use itertools::Itertools;
@@ -43,7 +46,6 @@ use crate::operations::types::{
 use crate::optimizers_builder::OptimizersConfig;
 use crate::shards::remote_shard::{CollectionCoreSearchRequest, CollectionSearchRequest};
 use crate::shards::replica_set::ReplicaState;
-use crate::shards::shard::ShardKey;
 use crate::shards::transfer::shard_transfer::ShardTransferMethod;
 
 pub fn sharding_method_to_proto(sharding_method: ShardingMethod) -> i32 {
@@ -124,6 +126,7 @@ pub fn try_record_from_grpc(
         id,
         payload,
         vector,
+        shard_key: convert_shard_key_from_grpc_opt(point.shard_key),
     })
 }
 
@@ -334,6 +337,7 @@ impl From<Record> for api::grpc::qdrant::RetrievedPoint {
             id: Some(record.id.into()),
             payload: record.payload.map(payload_to_proto).unwrap_or_default(),
             vectors,
+            shard_key: record.shard_key.map(convert_shard_key_to_grpc),
         }
     }
 }
@@ -1202,26 +1206,13 @@ impl From<AliasDescription> for api::grpc::qdrant::AliasDescription {
     }
 }
 
-impl From<ShardKey> for api::grpc::qdrant::ShardKey {
-    fn from(value: ShardKey) -> Self {
-        match value {
-            ShardKey::Keyword(keyword) => Self {
-                key: Some(api::grpc::qdrant::shard_key::Key::Keyword(keyword)),
-            },
-            ShardKey::Number(number) => Self {
-                key: Some(api::grpc::qdrant::shard_key::Key::Number(number)),
-            },
-        }
-    }
-}
-
 impl From<LocalShardInfo> for api::grpc::qdrant::LocalShardInfo {
     fn from(value: LocalShardInfo) -> Self {
         Self {
             shard_id: value.shard_id,
             points_count: value.points_count as u64,
             state: value.state as i32,
-            shard_key: value.shard_key.map(Into::into),
+            shard_key: value.shard_key.map(convert_shard_key_to_grpc),
         }
     }
 }
@@ -1232,7 +1223,7 @@ impl From<RemoteShardInfo> for api::grpc::qdrant::RemoteShardInfo {
             shard_id: value.shard_id,
             peer_id: value.peer_id,
             state: value.state as i32,
-            shard_key: value.shard_key.map(Into::into),
+            shard_key: value.shard_key.map(convert_shard_key_to_grpc),
         }
     }
 }
