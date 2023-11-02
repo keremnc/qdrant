@@ -74,6 +74,15 @@ impl QueueProxyShard {
     }
 
     /// Transfer all updates that the remote missed from WAL
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    /// If cancelled - none, some or all operations of that batch may be transmitted to the remote.
+    ///
+    /// The maximum acknowledged WAL version likely won't be updated. In the worst case this might
+    /// cause double sending operations. This should be fine as operations are idempotent.
     pub async fn transfer_all_missed_updates(&self) -> CollectionResult<()> {
         self.inner
             .as_ref()
@@ -121,6 +130,10 @@ impl QueueProxyShard {
     ///
     /// Because we have ownership (`self`) we have exclusive access to the internals. It guarantees
     /// that we will not process new operations on the shard while finalization is happening.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is *not* cancel safe.
     pub async fn finalize(self) -> Result<(LocalShard, RemoteShard), (CollectionError, Self)> {
         // Transfer all updates, do not unwrap on failure but return error with self
         match self.transfer_all_missed_updates().await {
@@ -141,6 +154,10 @@ impl QueueProxyShard {
     /// This intentionally forgets and drops updates pending to be transferred to the remote shard.
     /// The remote shard is therefore left in an inconsistent state, which should be resolved
     /// separately.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is *not* cancel safe.
     pub async fn forget_updates_and_finalize(mut self) -> (LocalShard, RemoteShard) {
         // Unwrap queue proxy shards and release max acknowledged version for WAL
         let queue_proxy = self
@@ -291,6 +308,15 @@ impl Inner {
     }
 
     /// Transfer all updates that the remote missed from WAL
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    /// If cancelled - none, some or all operations of that batch may be transmitted to the remote.
+    ///
+    /// The maximum acknowledged WAL version likely won't be updated. In the worst case this might
+    /// cause double sending operations. This should be fine as operations are idempotent.
     pub async fn transfer_all_missed_updates(&self) -> CollectionResult<()> {
         while !self.transfer_wal_batch().await? {}
 
@@ -305,6 +331,16 @@ impl Inner {
     ///
     /// Returns `true` if this was the last batch and we're now done. `false` if more batches must
     /// be sent.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
+    ///
+    /// If cancelled - none, some or all operations of that batch may be transmitted to the remote.
+    ///
+    /// The internal field keeping track of the last transfer likely won't be updated. In the worst
+    /// case this might cause double sending operations. This should be fine as operations are
+    /// idempotent.
     async fn transfer_wal_batch(&self) -> CollectionResult<bool> {
         let mut update_lock = Some(self.update_lock.lock().await);
         let start_index = self.last_update_idx.load(Ordering::Relaxed) + 1;
@@ -335,7 +371,7 @@ impl Inner {
         let last_idx = batch.last().map(|(idx, _)| *idx);
         for attempts in (0..BATCH_RETRIES).rev() {
             match transfer_operations_batch(&batch, &self.remote_shard).await {
-                Ok(()) => break,
+                Ok(()) => {}
                 Err(err) if attempts > 0 => {
                     log::error!(
                         "Failed to transfer batch of updates to peer {}, retrying: {err}",
@@ -345,9 +381,10 @@ impl Inner {
                 }
                 Err(err) => return Err(err),
             }
-        }
-        if let Some(idx) = last_idx {
-            self.last_update_idx.store(idx, Ordering::Relaxed);
+
+            if let Some(idx) = last_idx {
+                self.last_update_idx.store(idx, Ordering::Relaxed);
+            }
         }
 
         Ok(last_batch)
@@ -360,6 +397,10 @@ impl Inner {
     /// Using this function we set the WAL not to truncate past the given point.
     ///
     /// Providing `None` will release this limitation.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If cancelled, the max acknowledged version may not be set.
     async fn set_max_ack_version(&self, max_version: Option<u64>) {
         let update_handler = self.wrapped_shard.update_handler.lock().await;
         let mut max_ack_version = update_handler.max_ack_version.lock().await;
@@ -461,6 +502,12 @@ impl ShardOperation for Inner {
 }
 
 /// Transfer batch of operations without retries
+///
+/// # Cancel safety
+///
+/// This method is cancel safe.
+///
+/// If cancelled - none, some or all operations of the batch may be transmitted to the remote.
 async fn transfer_operations_batch(
     batch: &[(u64, CollectionUpdateOperations)],
     remote_shard: &RemoteShard,
