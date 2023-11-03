@@ -10040,19 +10040,17 @@
         }
       },
       "ContextPair": {
-        "type": "object",
-        "required": [
-          "negative",
-          "positive"
-        ],
-        "properties": {
-          "positive": {
+        "type": "array",
+        "items": [
+          {
             "$ref": "#/components/schemas/RecommendExample"
           },
-          "negative": {
+          {
             "$ref": "#/components/schemas/RecommendExample"
           }
-        }
+        ],
+        "maxItems": 2,
+        "minItems": 2
       },
       "DiscoverRequestBatchAlt": {
         "type": "object",

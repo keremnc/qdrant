@@ -634,11 +634,8 @@ pub struct DiscoverRequest {
     pub lookup_from: Option<LookupLocation>,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate, Clone)]
-pub struct ContextPair {
-    positive: RecommendExample,
-    negative: RecommendExample,
-}
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]
+pub struct ContextPair(RecommendExample, RecommendExample);
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Validate, Clone)]
 pub struct DiscoverRequestAlt {
