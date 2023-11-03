@@ -510,7 +510,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiscoverRequest"
+              $ref: "#/components/schemas/DiscoverRequestAlt"
 
       parameters:
         - name: collection_name
@@ -546,7 +546,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DiscoverRequestBatch"
+              $ref: "#/components/schemas/DiscoverRequestBatchAlt"
 
       parameters:
         - name: collection_name

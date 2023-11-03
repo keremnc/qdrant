@@ -635,6 +635,60 @@ pub struct DiscoverRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Validate, Clone)]
+pub struct ContextPair {
+    positive: RecommendExample,
+    negative: RecommendExample,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate, Clone)]
+pub struct DiscoverRequestAlt {
+    /// Look for vectors closest to this
+    pub target: Option<RecommendExample>,
+
+    /// Pairs of (positive, negative) examples to provide context to the search
+    pub context_pairs: Option<Vec<ContextPair>>,
+
+    /// Look only for points which satisfies this conditions
+    #[validate]
+    pub filter: Option<Filter>,
+
+    /// Additional search params
+    #[validate]
+    pub params: Option<SearchParams>,
+
+    /// Max number of result to return
+    #[serde(alias = "top")]
+    #[validate(range(min = 1))]
+    pub limit: usize,
+
+    /// Offset of the first result to return.
+    /// May be used to paginate results.
+    /// Note: large offset values may cause performance issues.
+    #[serde(default)]
+    pub offset: usize,
+
+    /// Select which payload to return with the response. Default: None
+    pub with_payload: Option<WithPayloadInterface>,
+
+    /// Whether to return the point vector with the result?
+    pub with_vector: Option<WithVector>,
+
+    /// Define which vector to use for recommendation, if not specified - try to use default vector
+    #[serde(default)]
+    pub using: Option<UsingVector>,
+
+    /// The location used to lookup vectors. If not specified - use current collection.
+    /// Note: the other collection should have the same vector size as the current collection
+    #[serde(default)]
+    pub lookup_from: Option<LookupLocation>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate)]
+pub struct DiscoverRequestBatchAlt {
+    pub searches: Vec<DiscoverRequestAlt>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Validate, Clone)]
 pub struct DiscoverRequestBatch {
     #[validate]
     pub searches: Vec<DiscoverRequest>,

@@ -8,9 +8,9 @@ use collection::operations::snapshot_ops::{
 };
 use collection::operations::types::{
     AliasDescription, CollectionClusterInfo, CollectionInfo, CollectionsAliasesResponse,
-    CountRequest, CountResult, DiscoverRequest, DiscoverRequestBatch, GroupsResult, PointGroup,
-    PointRequest, RecommendGroupsRequest, RecommendRequest, RecommendRequestBatch, Record,
-    ScrollRequest, ScrollResult, SearchGroupsRequest, SearchRequest, SearchRequestBatch,
+    CountRequest, CountResult, DiscoverRequestAlt, DiscoverRequestBatchAlt, GroupsResult,
+    PointGroup, PointRequest, RecommendGroupsRequest, RecommendRequest, RecommendRequestBatch,
+    Record, ScrollRequest, ScrollResult, SearchGroupsRequest, SearchRequest, SearchRequestBatch,
     UpdateResult,
 };
 use collection::operations::vector_ops::{DeleteVectors, UpdateVectors};
@@ -76,8 +76,8 @@ struct AllDefinitions {
     b7: GroupsResult,
     b8: UpdateOperations,
     b9: ShardSnapshotRecover,
-    ba: DiscoverRequest,
-    bb: DiscoverRequestBatch,
+    ba: DiscoverRequestAlt,
+    bb: DiscoverRequestBatchAlt,
 }
 
 fn save_schema<T: JsonSchema>() {

@@ -4710,7 +4710,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DiscoverRequest"
+                "$ref": "#/components/schemas/DiscoverRequestAlt"
               }
             }
           }
@@ -4811,7 +4811,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/DiscoverRequestBatch"
+                "$ref": "#/components/schemas/DiscoverRequestBatchAlt"
               }
             }
           }
@@ -9931,8 +9931,7 @@
           }
         ]
       },
-      "DiscoverRequest": {
-        "description": "Use context and a target to find the most similar points, constrained by the context.\n\nWhen using only the context, a special search is performed where pairs of points are used to generate a loss that guides the search towards the zone where most positive examples overlap. This means that the score minimizes the scenario of finding a point closer to a negative than to a positive part of a pair. Since the score of a context relates to loss, the maximum score a point can get is 0.0, and it becomes normal that many points can have 0.0 as score.\n\nUsing only a target is equivalent to regular search, so the score is the distance to the target.\n\nWhen using both context and target, the score behaves a little different: The integer part of the score represents the \"rank\" with respect to the context, while the decimal part of the score relates to the distance to the target.",
+      "DiscoverRequestAlt": {
         "type": "object",
         "required": [
           "limit"
@@ -9953,17 +9952,7 @@
             "description": "Pairs of (positive, negative) examples to provide context to the search",
             "type": "array",
             "items": {
-              "type": "array",
-              "items": [
-                {
-                  "$ref": "#/components/schemas/RecommendExample"
-                },
-                {
-                  "$ref": "#/components/schemas/RecommendExample"
-                }
-              ],
-              "maxItems": 2,
-              "minItems": 2
+              "$ref": "#/components/schemas/ContextPair"
             },
             "nullable": true
           },
@@ -10050,7 +10039,22 @@
           }
         }
       },
-      "DiscoverRequestBatch": {
+      "ContextPair": {
+        "type": "object",
+        "required": [
+          "negative",
+          "positive"
+        ],
+        "properties": {
+          "positive": {
+            "$ref": "#/components/schemas/RecommendExample"
+          },
+          "negative": {
+            "$ref": "#/components/schemas/RecommendExample"
+          }
+        }
+      },
+      "DiscoverRequestBatchAlt": {
         "type": "object",
         "required": [
           "searches"
@@ -10059,7 +10063,7 @@
           "searches": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/DiscoverRequest"
+              "$ref": "#/components/schemas/DiscoverRequestAlt"
             }
           }
         }
