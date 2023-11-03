@@ -5676,6 +5676,17 @@
                 "nullable": true
               }
             ]
+          },
+          "shard_key": {
+            "description": "Shard Key",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKey"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
       },
@@ -5702,6 +5713,18 @@
                 "format": "float"
               }
             }
+          }
+        ]
+      },
+      "ShardKey": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
           }
         ]
       },
@@ -6376,6 +6399,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/VectorStruct"
+              },
+              {
+                "nullable": true
+              }
+            ]
+          },
+          "shard_key": {
+            "description": "Shard Key",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKey"
               },
               {
                 "nullable": true
@@ -7175,8 +7209,31 @@
             "items": {
               "$ref": "#/components/schemas/ExtendedPointId"
             }
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
+      },
+      "ShardKeySelector": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ShardKey"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShardKey"
+            }
+          }
+        ]
       },
       "FilterSelector": {
         "type": "object",
@@ -7186,11 +7243,21 @@
         "properties": {
           "filter": {
             "$ref": "#/components/schemas/Filter"
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
       },
       "PointInsertOperations": {
-        "oneOf": [
+        "anyOf": [
           {
             "$ref": "#/components/schemas/PointsBatch"
           },
@@ -7199,51 +7266,19 @@
           }
         ]
       },
-      "BatchVectorStruct": {
-        "anyOf": [
-          {
-            "type": "array",
-            "items": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "format": "float"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "items": {
-                  "type": "number",
-                  "format": "float"
-                }
-              }
-            }
-          }
-        ]
-      },
-      "PointStruct": {
+      "PointsBatch": {
         "type": "object",
         "required": [
-          "id",
-          "vector"
+          "batch"
         ],
         "properties": {
-          "id": {
-            "$ref": "#/components/schemas/ExtendedPointId"
+          "batch": {
+            "$ref": "#/components/schemas/Batch"
           },
-          "vector": {
-            "$ref": "#/components/schemas/VectorStruct"
-          },
-          "payload": {
-            "description": "Payload values (optional)",
+          "shard_key": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Payload"
+                "$ref": "#/components/schemas/ShardKeySelector"
               },
               {
                 "nullable": true
@@ -7284,15 +7319,32 @@
           }
         }
       },
-      "PointsBatch": {
-        "required": [
-          "batch"
-        ],
-        "properties": {
-          "batch": {
-            "$ref": "#/components/schemas/Batch"
+      "BatchVectorStruct": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "format": "float"
+                }
+              }
+            }
           }
-        }
+        ]
       },
       "PointsList": {
         "type": "object",
@@ -7305,6 +7357,42 @@
             "items": {
               "$ref": "#/components/schemas/PointStruct"
             }
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
+              },
+              {
+                "nullable": true
+              }
+            ]
+          }
+        }
+      },
+      "PointStruct": {
+        "type": "object",
+        "required": [
+          "id",
+          "vector"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ExtendedPointId"
+          },
+          "vector": {
+            "$ref": "#/components/schemas/VectorStruct"
+          },
+          "payload": {
+            "description": "Payload values (optional)",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
       },
@@ -7330,6 +7418,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "nullable": true
+              }
+            ]
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
               },
               {
                 "nullable": true
@@ -7364,6 +7462,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Filter"
+              },
+              {
+                "nullable": true
+              }
+            ]
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
               },
               {
                 "nullable": true
@@ -7724,18 +7832,6 @@
             "$ref": "#/components/schemas/ReplicaState"
           }
         }
-      },
-      "ShardKey": {
-        "anyOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          }
-        ]
       },
       "ReplicaState": {
         "description": "State of the single shard within a replica set.",
@@ -9168,6 +9264,16 @@
               "$ref": "#/components/schemas/PointVectors"
             },
             "minItems": 1
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
       },
@@ -9219,6 +9325,16 @@
             },
             "minItems": 1,
             "uniqueItems": true
+          },
+          "shard_key": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShardKeySelector"
+              },
+              {
+                "nullable": true
+              }
+            ]
           }
         }
       },

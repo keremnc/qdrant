@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use api::grpc::conversions::proto_to_payloads;
 use api::grpc::qdrant::payload_index_params::IndexParams;
+use api::grpc::qdrant::points_update_operation::{ClearPayload, Operation, PointStructList};
 use api::grpc::qdrant::{
     points_update_operation, BatchResult, ClearPayloadPoints, CoreSearchPoints, CountPoints,
     CountResponse, CreateFieldIndexCollection, DeleteFieldIndexCollection, DeletePayloadPoints,
@@ -13,11 +14,14 @@ use api::grpc::qdrant::{
     UpdateBatchPoints, UpdateBatchResponse, UpdatePointVectors, UpsertPoints,
 };
 use collection::operations::consistency_params::ReadConsistency;
-use collection::operations::conversions::write_ordering_from_proto;
+use collection::operations::conversions::{
+    try_points_selector_from_grpc, write_ordering_from_proto,
+};
 use collection::operations::payload_ops::DeletePayload;
 use collection::operations::point_ops::{
-    self, PointInsertOperations, PointOperations, PointSyncOperation,
+    self, PointInsertOperations, PointOperations, PointSyncOperation, PointsList,
 };
+use collection::operations::shard_key_selector::ShardKeySelector;
 use collection::operations::types::{
     default_exact_count, CoreSearchRequestBatch, PointRequest, RecommendExample,
     RecommendRequestBatch, ScrollRequest, SearchRequest, SearchRequestBatch,
@@ -30,6 +34,7 @@ use segment::types::{
     ExtendedPointId, Filter, PayloadFieldSchema, PayloadSchemaParams, PayloadSchemaType,
 };
 use storage::content_manager::conversions::error_to_status;
+use storage::content_manager::shard_key_selection::ShardKeySelectorInternal;
 use storage::content_manager::toc::TableOfContent;
 use tonic::{Response, Status};
 
@@ -44,7 +49,7 @@ fn extract_points_selector(
     points_selector: Option<PointsSelector>,
 ) -> Result<(Option<Vec<ExtendedPointId>>, Option<Filter>), Status> {
     let (points, filter) = if let Some(points_selector) = points_selector {
-        let points_selector = points_selector.try_into()?;
+        let points_selector = try_points_selector_from_grpc(points_selector, None)?;
         match points_selector {
             point_ops::PointsSelector::PointIdsSelector(points) => (Some(points.points), None),
             point_ops::PointsSelector::FilterSelector(filter) => (None, Some(filter.filter)),
@@ -75,12 +80,16 @@ pub async fn upsert(
         wait,
         points,
         ordering,
+        shard_key_selector,
     } = upsert_points;
     let points = points
         .into_iter()
         .map(|point| point.try_into())
         .collect::<Result<_, _>>()?;
-    let operation = PointInsertOperations::PointsList(points);
+    let operation = PointInsertOperations::PointsList(PointsList {
+        points,
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
+    });
     let timing = Instant::now();
     let result = do_upsert_points(
         toc,
@@ -132,6 +141,7 @@ pub async fn sync(
             shard_selection,
             wait.unwrap_or(false),
             write_ordering_from_proto(ordering)?,
+            ShardKeySelectorInternal::Empty, // Sync operation is supposed to select shard directly
         )
         .await
         .map_err(error_to_status)?;
@@ -150,11 +160,12 @@ pub async fn delete(
         wait,
         points,
         ordering,
+        shard_key_selector,
     } = delete_points;
 
     let points_selector = match points {
         None => return Err(Status::invalid_argument("PointSelector is missing")),
-        Some(p) => p.try_into()?,
+        Some(p) => try_points_selector_from_grpc(p, shard_key_selector)?,
     };
 
     let timing = Instant::now();
@@ -183,6 +194,7 @@ pub async fn update_vectors(
         wait,
         points,
         ordering,
+        shard_key_selector,
     } = update_point_vectors;
 
     // Build list of operation points
@@ -199,7 +211,10 @@ pub async fn update_vectors(
         op_points.push(PointVectors { id, vector });
     }
 
-    let operation = UpdateVectors { points: op_points };
+    let operation = UpdateVectors {
+        points: op_points,
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
+    };
 
     let timing = Instant::now();
     let result = do_update_vectors(
@@ -228,6 +243,7 @@ pub async fn delete_vectors(
         points_selector,
         vectors,
         ordering,
+        shard_key_selector,
     } = delete_point_vectors;
 
     let (points, filter) = extract_points_selector(points_selector)?;
@@ -240,6 +256,7 @@ pub async fn delete_vectors(
         points,
         filter,
         vector: vector_names.into_iter().collect(),
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
     };
 
     let timing = Instant::now();
@@ -269,6 +286,7 @@ pub async fn set_payload(
         payload,
         points_selector,
         ordering,
+        shard_key_selector,
     } = set_payload_points;
 
     let (points, filter) = extract_points_selector(points_selector)?;
@@ -276,6 +294,7 @@ pub async fn set_payload(
         payload: proto_to_payloads(payload)?,
         points,
         filter,
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
     };
 
     let timing = Instant::now();
@@ -305,6 +324,7 @@ pub async fn overwrite_payload(
         payload,
         points_selector,
         ordering,
+        shard_key_selector,
     } = set_payload_points;
 
     let (points, filter) = extract_points_selector(points_selector)?;
@@ -312,6 +332,7 @@ pub async fn overwrite_payload(
         payload: proto_to_payloads(payload)?,
         points,
         filter,
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
     };
 
     let timing = Instant::now();
@@ -341,6 +362,7 @@ pub async fn delete_payload(
         keys,
         points_selector,
         ordering,
+        shard_key_selector,
     } = delete_payload_points;
 
     let (points, filter) = extract_points_selector(points_selector)?;
@@ -348,6 +370,7 @@ pub async fn delete_payload(
         keys,
         points,
         filter,
+        shard_key: shard_key_selector.map(ShardKeySelector::from),
     };
 
     let timing = Instant::now();
@@ -376,11 +399,12 @@ pub async fn clear_payload(
         wait,
         points,
         ordering,
+        shard_key_selector,
     } = clear_payload_points;
 
     let points_selector = match points {
         None => return Err(Status::invalid_argument("PointSelector is missing")),
-        Some(p) => p.try_into()?,
+        Some(p) => try_points_selector_from_grpc(p, shard_key_selector)?,
     };
 
     let timing = Instant::now();
@@ -420,20 +444,24 @@ pub async fn update_batch(
         let collection_name = collection_name.clone();
         let ordering = ordering.clone();
         let result = match operation {
-            points_update_operation::Operation::Upsert(points) => {
+            points_update_operation::Operation::Upsert(PointStructList {
+                points,
+                shard_key_selector,
+            }) => {
                 upsert(
                     toc,
                     UpsertPoints {
                         collection_name,
-                        points: points.points,
+                        points,
                         wait,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
                 .await
             }
-            points_update_operation::Operation::Delete(points) => {
+            points_update_operation::Operation::DeleteDeprecated(points) => {
                 delete(
                     toc,
                     DeletePoints {
@@ -441,6 +469,7 @@ pub async fn update_batch(
                         wait,
                         points: Some(points),
                         ordering,
+                        shard_key_selector: None,
                     },
                     shard_selection,
                 )
@@ -450,6 +479,7 @@ pub async fn update_batch(
                 points_update_operation::SetPayload {
                     payload,
                     points_selector,
+                    shard_key_selector,
                 },
             ) => {
                 set_payload(
@@ -460,6 +490,7 @@ pub async fn update_batch(
                         payload,
                         points_selector,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
@@ -469,6 +500,7 @@ pub async fn update_batch(
                 points_update_operation::SetPayload {
                     payload,
                     points_selector,
+                    shard_key_selector,
                 },
             ) => {
                 overwrite_payload(
@@ -479,6 +511,7 @@ pub async fn update_batch(
                         payload,
                         points_selector,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
@@ -488,6 +521,7 @@ pub async fn update_batch(
                 points_update_operation::DeletePayload {
                     keys,
                     points_selector,
+                    shard_key_selector,
                 },
             ) => {
                 delete_payload(
@@ -498,26 +532,34 @@ pub async fn update_batch(
                         keys,
                         points_selector,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
                 .await
             }
-            points_update_operation::Operation::ClearPayload(points) => {
+            points_update_operation::Operation::ClearPayload(ClearPayload {
+                points,
+                shard_key_selector,
+            }) => {
                 clear_payload(
                     toc,
                     ClearPayloadPoints {
                         collection_name,
                         wait,
-                        points: Some(points),
+                        points,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
                 .await
             }
             points_update_operation::Operation::UpdateVectors(
-                points_update_operation::UpdateVectors { points },
+                points_update_operation::UpdateVectors {
+                    points,
+                    shard_key_selector,
+                },
             ) => {
                 update_vectors(
                     toc,
@@ -526,6 +568,7 @@ pub async fn update_batch(
                         wait,
                         points,
                         ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
@@ -535,6 +578,7 @@ pub async fn update_batch(
                 points_update_operation::DeleteVectors {
                     points_selector,
                     vectors,
+                    shard_key_selector,
                 },
             ) => {
                 delete_vectors(
@@ -545,6 +589,38 @@ pub async fn update_batch(
                         points_selector,
                         vectors,
                         ordering,
+                        shard_key_selector,
+                    },
+                    shard_selection,
+                )
+                .await
+            }
+            Operation::ClearPayloadDeprecated(selector) => {
+                clear_payload(
+                    toc,
+                    ClearPayloadPoints {
+                        collection_name,
+                        wait,
+                        points: Some(selector),
+                        ordering,
+                        shard_key_selector: None,
+                    },
+                    shard_selection,
+                )
+                .await
+            }
+            Operation::DeletePoints(points_update_operation::DeletePoints {
+                points,
+                shard_key_selector,
+            }) => {
+                delete(
+                    toc,
+                    DeletePoints {
+                        collection_name,
+                        wait,
+                        points,
+                        ordering,
+                        shard_key_selector,
                     },
                     shard_selection,
                 )
