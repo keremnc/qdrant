@@ -75,6 +75,9 @@ pub enum ShardTransferMethod {
     Snapshot,
 }
 
+/// # Cancel safety
+///
+/// This function is *not* cancel safe
 #[allow(clippy::too_many_arguments)]
 pub async fn transfer_shard(
     transfer_config: ShardTransfer,
@@ -89,6 +92,8 @@ pub async fn transfer_shard(
 ) -> CollectionResult<()> {
     let shard_id = transfer_config.shard_id;
 
+    // TODO: Check `cancel`?
+
     // Initiate shard on a remote peer
     let remote_shard = RemoteShard::new(
         shard_id,
@@ -98,15 +103,21 @@ pub async fn transfer_shard(
     );
 
     // Prepare the remote for receiving the shard, waits for the correct state on the remote
-    remote_shard.initiate_transfer().await?;
+    cancel::future::cancel_on_token(cancel.clone(), remote_shard.initiate_transfer()).await??;
 
     match transfer_config.method.unwrap_or_default() {
         // Transfer shard record in batches
         ShardTransferMethod::StreamRecords => {
-            transfer_stream_records(shard_holder.clone(), shard_id, remote_shard, cancel).await
+            cancel::future::cancel_on_token(
+                cancel,
+                transfer_stream_records(shard_holder.clone(), shard_id, remote_shard),
+            )
+            .await??;
         }
+
         // Transfer shard as snapshot
         ShardTransferMethod::Snapshot => {
+            // `transfer_snapshot` is *not* cancel safe
             transfer_snapshot(
                 transfer_config,
                 shard_holder.clone(),
@@ -119,9 +130,11 @@ pub async fn transfer_shard(
                 temp_dir,
                 cancel,
             )
-            .await
+            .await?;
         }
     }
+
+    Ok(())
 }
 
 /// Orchestrate shard transfer by streaming records
@@ -131,20 +144,24 @@ pub async fn transfer_shard(
 ///
 /// This first transfers configured indices. Then it transfers all point records in batches.
 /// Updates to the local shard are forwarded to the remote concurrently.
+///
+/// # Cancel safety
+///
+/// This function is cancel safe
 async fn transfer_stream_records(
     shard_holder: Arc<LockedShardHolder>,
     shard_id: ShardId,
     remote_shard: RemoteShard,
-    cancel: CancellationToken,
 ) -> CollectionResult<()> {
     let remote_peer_id = remote_shard.peer_id;
+
     log::debug!("Starting shard {shard_id} transfer to peer {remote_peer_id} by streaming records");
 
     // Proxify local shard and create payload indexes on remote shard
     {
-        let shard_holder_guard = shard_holder.read().await;
-        let transferring_shard_opt = shard_holder_guard.get_shard(&shard_id);
-        let Some(replica_set) = transferring_shard_opt else {
+        let shard_holder = shard_holder.read().await;
+
+        let Some(replica_set) = shard_holder.get_shard(&shard_id) else {
             return Err(CollectionError::service_error(format!(
                 "Shard {shard_id} cannot be proxied because it does not exist"
             )));
@@ -152,35 +169,33 @@ async fn transfer_stream_records(
 
         replica_set.proxify_local(remote_shard).await?;
 
+        // TODO: Is cancelling `ShardReplicaSet::transfer_indexes` safe *for receiver*?
         replica_set.transfer_indexes().await?;
     }
 
     // Transfer contents batch by batch
     log::trace!("Transferring points to shard {shard_id} by streaming records");
-    let mut offset = None;
-    loop {
-        if cancel.is_cancelled() {
-            return Err(CollectionError::Cancelled {
-                description: "Transfer cancelled".to_string(),
-            });
-        }
-        let shard_holder_guard = shard_holder.read().await;
-        let transferring_shard_opt = shard_holder_guard.get_shard(&shard_id);
 
-        if let Some(replica_set) = transferring_shard_opt {
-            offset = replica_set
-                .transfer_batch(offset, TRANSFER_BATCH_SIZE)
-                .await?;
-            if offset.is_none() {
-                // That was the last batch, all look good
-                break;
-            }
-        } else {
+    let mut offset = None;
+
+    loop {
+        let shard_holder = shard_holder.read().await;
+
+        let Some(replica_set) = shard_holder.get_shard(&shard_id) else {
             // Forward proxy gone?!
             // That would be a programming error.
             return Err(CollectionError::service_error(format!(
                 "Shard {shard_id} is not found"
             )));
+        };
+
+        offset = replica_set
+            .transfer_batch(offset, TRANSFER_BATCH_SIZE)
+            .await?;
+
+        if offset.is_none() {
+            // That was the last batch, all look good
+            break;
         }
     }
 
@@ -243,6 +258,10 @@ async fn transfer_stream_records(
 /// - The local shard is un-proxified
 /// - The shard transfer is finished
 /// - The remote shard state is set to `Active` through consensus
+///
+/// # Cancel safety
+///
+/// This function is *not* cancel safe.
 #[allow(clippy::too_many_arguments)]
 async fn transfer_snapshot(
     transfer_config: ShardTransfer,
@@ -257,6 +276,7 @@ async fn transfer_snapshot(
     cancel: CancellationToken,
 ) -> CollectionResult<()> {
     let remote_peer_id = remote_shard.peer_id;
+
     log::debug!(
         "Starting shard {shard_id} transfer to peer {remote_peer_id} using snapshot transfer"
     );
@@ -271,18 +291,15 @@ async fn transfer_snapshot(
         )));
     };
 
-    error_if_cancelled(&cancel)?;
-
     // Queue proxy local shard
     replica_set
         .queue_proxify_local(remote_shard.clone())
         .await?;
+
     debug_assert!(
         replica_set.is_queue_proxy().await,
         "Local shard must be a queue proxy"
     );
-
-    error_if_cancelled(&cancel)?;
 
     // Create shard snapshot
     log::trace!("Creating snapshot of shard {shard_id} for shard snapshot transfer");
@@ -290,6 +307,7 @@ async fn transfer_snapshot(
         .create_shard_snapshot(snapshots_path, collection_name, shard_id, temp_dir)
         .await?;
 
+    // TODO: If future is cancelled until `get_shard_snapshot_path` resolves, shard snapshot may not be cleaned up...
     let snapshot_temp_path = shard_holder_read
         .get_shard_snapshot_path(snapshots_path, shard_id, &snapshot_description.name)
         .await
@@ -299,8 +317,6 @@ async fn transfer_snapshot(
                 "Failed to determine snapshot path, cannot continue with shard snapshot recovery: {err}"
             ))
         })?;
-
-    error_if_cancelled(&cancel)?;
 
     // Recover shard snapshot on remote
     let mut shard_download_url = local_rest_address;
@@ -328,8 +344,6 @@ async fn transfer_snapshot(
         log::warn!("Failed to delete shard transfer snapshot after recovery, snapshot file may be left behind: {err}");
     }
 
-    error_if_cancelled(&cancel)?;
-
     // Set shard state to Partial
     log::trace!("Shard {shard_id} snapshot recovered on {remote_peer_id} for snapshot transfer, switching into next stage through consensus");
     consensus
@@ -345,13 +359,16 @@ async fn transfer_snapshot(
             ))
         })?;
 
-    error_if_cancelled(&cancel)?;
+    // TODO: Everything *before* this point is cancel safe
 
     // Transfer queued updates to remote, transform into forward proxy
     log::trace!("Transfer all queue proxy updates and transform into forward proxy");
-    replica_set.queue_proxy_into_forward_proxy().await?;
+    // `ShardReplicaSet::queue_proxy_into_forward_proxy` is *not* cancel safe
+    replica_set
+        .queue_proxy_into_forward_proxy(cancel.clone())
+        .await?;
 
-    error_if_cancelled(&cancel)?;
+    // TODO: Everyghing *after* this point is cancel safe
 
     // Wait for Partial state in our replica set
     let partial_state = ReplicaState::Partial;
@@ -368,8 +385,6 @@ async fn transfer_snapshot(
                 "Shard being transferred did not reach {partial_state:?} state in time: {err}",
             ))
         })?;
-
-    error_if_cancelled(&cancel)?;
 
     // Synchronize all nodes
     await_consensus_sync(consensus, &channel_service, transfer_config.from).await;
@@ -388,6 +403,10 @@ async fn transfer_snapshot(
 ///
 /// If awaiting on other nodes fails for any reason, this simply continues after the consensus
 /// timeout.
+///
+/// # Cancel safety
+///
+/// This function is cancel safe
 async fn await_consensus_sync(
     consensus: &dyn ShardTransferConsensus,
     channel_service: &ChannelService,

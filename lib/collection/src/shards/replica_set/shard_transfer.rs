@@ -1,3 +1,5 @@
+use std::ops::{Deref as _, DerefMut};
+
 use segment::types::PointIdType;
 
 use super::ShardReplicaSet;
@@ -8,6 +10,9 @@ use crate::shards::remote_shard::RemoteShard;
 use crate::shards::shard::Shard;
 
 impl ShardReplicaSet {
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     pub async fn proxify_local(&self, remote_shard: RemoteShard) -> CollectionResult<()> {
         let mut local_write = self.local.write().await;
 
@@ -62,6 +67,9 @@ impl ShardReplicaSet {
         Ok(())
     }
 
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     pub async fn queue_proxify_local(&self, remote_shard: RemoteShard) -> CollectionResult<()> {
         let mut local_write = self.local.write().await;
 
@@ -211,25 +219,34 @@ impl ShardReplicaSet {
     }
 
     /// Custom operation for transferring data from one shard to another during transfer
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     pub async fn transfer_batch(
         &self,
         offset: Option<PointIdType>,
         batch_size: usize,
     ) -> CollectionResult<Option<PointIdType>> {
-        let read_local = self.local.read().await;
-        if let Some(Shard::ForwardProxy(proxy)) = &*read_local {
-            proxy
-                .transfer_batch(offset, batch_size, &self.search_runtime)
-                .await
-        } else {
-            Err(CollectionError::service_error(format!(
+        let local = self.local.read().await;
+
+        let Some(Shard::ForwardProxy(proxy)) = local.deref() else {
+            return Err(CollectionError::service_error(format!(
                 "Cannot transfer batch from shard {} because it is not proxified",
                 self.shard_id
-            )))
-        }
+            )));
+        };
+
+        proxy
+            .transfer_batch(offset, batch_size, &self.search_runtime)
+            .await
     }
 
     /// Custom operation for transferring indexes from one shard to another during transfer
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     pub async fn transfer_indexes(&self) -> CollectionResult<()> {
         let read_local = self.local.read().await;
         if let Some(Shard::ForwardProxy(proxy)) = &*read_local {
@@ -237,6 +254,8 @@ impl ShardReplicaSet {
                 "Transferring indexes to shard {}",
                 proxy.remote_shard.peer_id,
             );
+
+            // TODO: Is cancelling `ForwardProxyShard::transfer_indexes` safe *for receiver*?
             proxy.transfer_indexes().await
         } else {
             Err(CollectionError::service_error(format!(
@@ -267,41 +286,54 @@ impl ShardReplicaSet {
     /// # Errors
     ///
     /// Returns an error if transferring all updates to the remote failed.
-    pub async fn queue_proxy_into_forward_proxy(&self) -> CollectionResult<()> {
-        // First pass: transfer all missed updates with shared read lock
-        {
-            let local_read = self.local.read().await;
-            let Some(Shard::QueueProxy(proxy)) = &*local_read else {
-                return Ok(());
-            };
-            proxy.transfer_all_missed_updates().await?;
-        }
+    ///
+    /// # Cancel safety
+    ///
+    /// This function is *not* cancel safe
+    pub async fn queue_proxy_into_forward_proxy(
+        &self,
+        cancel: cancel::CancellationToken,
+    ) -> CollectionResult<()> {
+        // `local.take()`, `QueueProxyShard::forget_updates_and_finalize` and `local.insert()
 
-        // Second pass: transfer new updates, safely finalize and transform
-        let mut local_write = self.local.write().await;
-        if !matches!(*local_write, Some(Shard::QueueProxy(_))) {
+        let future = async {
+            // First pass: transfer all missed updates with shared read lock
+            {
+                let local = self.local.read().await;
+
+                let Some(Shard::QueueProxy(proxy)) = local.deref() else {
+                    return Ok(None);
+                };
+
+                proxy.transfer_all_missed_updates().await?;
+            }
+
+            // Second pass: transfer new updates...
+            let mut local = self.local.write().await;
+
+            let Some(Shard::QueueProxy(proxy)) = local.deref_mut() else {
+                return Ok(None);
+            };
+
+            proxy.transfer_all_missed_updates().await?;
+
+            CollectionResult::Ok(Some(local))
+        };
+
+        let Some(mut local) = cancel::future::cancel_on_token(cancel, future).await?? else {
             return Ok(());
-        }
-        let Some(Shard::QueueProxy(queue_proxy)) = local_write.take() else {
+        };
+
+        // ...and transform
+        let Some(Shard::QueueProxy(queue_proxy)) = local.take() else {
             unreachable!();
         };
-        match queue_proxy.finalize().await {
-            // When finalization is successful, transform into forward proxy
-            Ok((local_shard, remote_shard)) => {
-                log::trace!(
-                    "Transferred all queue proxy operations, transforming into forward proxy now"
-                );
-                let forward_proxy = ForwardProxyShard::new(local_shard, remote_shard);
-                let _ = local_write.insert(Shard::ForwardProxy(forward_proxy));
-                Ok(())
-            }
-            // When finalization fails, put the queue proxy back
-            Err((err, queue_proxy)) => {
-                let _ = local_write.insert(Shard::QueueProxy(queue_proxy));
-                Err(CollectionError::service_error(format!(
-                    "Failed to finalize queue proxy and transform into forward proxy: {err}"
-                )))
-            }
-        }
+
+        log::trace!("Transferred all queue proxy operations, transforming into forward proxy now");
+        let (local_shard, remote_shard) = queue_proxy.forget_updates_and_finalize().await;
+        let forward_proxy = ForwardProxyShard::new(local_shard, remote_shard);
+        let _ = local.insert(Shard::ForwardProxy(forward_proxy));
+
+        Ok(())
     }
 }

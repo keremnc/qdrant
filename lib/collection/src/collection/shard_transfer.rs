@@ -272,6 +272,8 @@ impl Collection {
         &self,
         shard_id: ShardId,
     ) -> impl Future<Output = CollectionResult<()>> + 'static {
+        // TODO: Ensure cancel-safety!
+
         let shards_holder = self.shards_holder.clone();
 
         async move {

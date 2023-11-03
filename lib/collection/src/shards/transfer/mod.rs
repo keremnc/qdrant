@@ -57,6 +57,10 @@ pub trait ShardTransferConsensus: Send + Sync {
     /// `Partial` to accept updates, we therefore assert the state on the remote explicitly rather
     /// than asserting locally. If it fails, it will be retried for up to
     /// `CONSENSUS_CONFIRM_RETRIES` times.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     async fn snapshot_recovered_switch_to_partial_confirm_remote(
         &self,
         transfer_config: &ShardTransfer,
@@ -115,6 +119,10 @@ pub trait ShardTransferConsensus: Send + Sync {
     /// - any of the peers is not on the same term
     /// - waiting takes longer than the specified timeout
     /// - any of the peers cannot be reached
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe.
     async fn await_consensus_sync(
         &self,
         this_peer_id: PeerId,

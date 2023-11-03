@@ -141,6 +141,10 @@ impl QueueProxyShard {
     /// This intentionally forgets and drops updates pending to be transferred to the remote shard.
     /// The remote shard is therefore left in an inconsistent state, which should be resolved
     /// separately.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is not cancel safe, because it consumes `QueueProxyShard`.
     pub async fn forget_updates_and_finalize(mut self) -> (LocalShard, RemoteShard) {
         // Unwrap queue proxy shards and release max acknowledged version for WAL
         let queue_proxy = self
@@ -275,6 +279,9 @@ struct Inner {
 }
 
 impl Inner {
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     pub async fn new(wrapped_shard: LocalShard, remote_shard: RemoteShard) -> Self {
         let last_idx = wrapped_shard.wal.lock().last_index();
         let shard = Self {
@@ -360,6 +367,10 @@ impl Inner {
     /// Using this function we set the WAL not to truncate past the given point.
     ///
     /// Providing `None` will release this limitation.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe
     async fn set_max_ack_version(&self, max_version: Option<u64>) {
         let update_handler = self.wrapped_shard.update_handler.lock().await;
         let mut max_ack_version = update_handler.max_ack_version.lock().await;
